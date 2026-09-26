@@ -59,8 +59,8 @@ def show_graph(
     quantity_label = "Transmitância" if transmittance else "Absorbância"
     plt.get_current_fig_manager().set_window_title(f"Gráfico de {quantity_label}")
     plt.title(f"Comprimento de onda vs {quantity_label}")
-    plt.xlabel("Comprimento de onda")
-    plt.ylabel(quantity_label)
+    plt.xlabel("Comprimento de onda (nm)")
+    plt.ylabel(f"{quantity_label} (u.a)")
     plt.legend(loc="upper right")
     plt.tight_layout()
     plt.show()

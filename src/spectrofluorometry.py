@@ -3,13 +3,12 @@ from pathlib import Path
 
 import typer
 import matplotlib.pyplot as plt
-from utils.data import DATA_EXTRACTORS
+from utils.data import DATA_EXTRACTORS, Data
 
 app = typer.Typer()
 
 GRAPH_LABELS = {
     "emiss": "Emissão",
-    "exc": "Excitação",
     "sync": "Síncrona"
 }
 
@@ -26,16 +25,26 @@ def show_graph(
             resolve_path=True,
         )
     ],
-    graph_type: Literal["emiss", "exc", "sync"] = "emiss"
+    graph_type: Literal["emiss", "sync"] = "emiss"
 ):
     data_extractor = DATA_EXTRACTORS["XY"]
     main_data_group = data_extractor.extract_data(data_path)
 
+    sorted_data_list: list[Data] = main_data_group.data_list
+
+    """
+    Corrige o sorteio para caso o nome dos dados seja "{valor numérico}%". 
+    Cuidado! Essa função provavelmente retornará algum error caso os dados 
+    não estejam no formato supracitado.
+    """
+    if len(sorted_data_list) > 0 and all("%" in unsorted_data_name for unsorted_data_name in [unsorted_data.name for unsorted_data in sorted_data_list]):
+        sorted_data_list = sorted(sorted_data_list, key = lambda unsorted_data: float(unsorted_data.name.replace("%", "")))
+
     cmap = plt.get_cmap('coolwarm')
 
-    num_plots = len(main_data_group.data_list)
+    num_plots = len(sorted_data_list)
 
-    for index, data in enumerate(main_data_group.data_list):
+    for index, data in enumerate(sorted_data_list):
         color_index = index / (num_plots - 1) # Normalizado
         line_color = cmap(color_index)
 
@@ -54,8 +63,8 @@ def show_graph(
 
     plt.get_current_fig_manager().set_window_title(f"Gráfico de Espectrofluorimetria {GRAPH_LABELS[graph_type]}")
     plt.title(f"Comprimento de onda vs Intensidade ({GRAPH_LABELS[graph_type]})")
-    plt.xlabel("Comprimento de onda")
-    plt.ylabel("Intensidade")
+    plt.xlabel("Comprimento de onda (nm)")
+    plt.ylabel("Intensidade (u.a)")
     plt.legend(loc="upper right")
     plt.tight_layout()
     plt.show()

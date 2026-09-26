@@ -2,13 +2,18 @@ from pathlib import Path
 from typing import Callable, Annotated
 import copy
 from io import StringIO
+import math
+
 from tabulate import tabulate
 import typer
+import matplotlib.pyplot as plt
 
-from utils.data import Data, DataGroup, DataContent, DATA_EXTRACTORS
 import scipy as sp
 import numpy as np
+from numpy.typing import NDArray
 from sklearn.decomposition import PCA
+
+from utils.data import Data, DataGroup, DataContent, DATA_EXTRACTORS
 
 def process_group_data(data_group: DataGroup, process: Callable[[Data], Data], recursive: bool = False) -> DataGroup:
     processed_data_list = [process(data) for data in data_group.data_list]
@@ -77,13 +82,18 @@ def get_group_from_data_directory(data_path: Path) -> DataGroup:
     data_group = data_extractor.extract_data(data_path, recursive_search=True)
     return data_group
 
+
+X_START_OFFSET = 10
+X_END_BOUND = 680
+X_STEP = 0.5
+
 """
 Cria várias matrizes cuja as linhas são populadas por concentrações e as colunas pelo espectro de emissão 
 obtidas pelas iterações de excitação por um certo comprimento de onda
 # Exemplo:
 - Concentração (20, 40, 60, 80, 10) nas linhas e os valores de intensidade 
 """
-def build_concentration_exc_matrices(data_path: Path):
+def build_concentration_exc_matrices(data_path: Path) -> tuple[list[float], list[DataGroup], list[NDArray]]:
     data_group = get_group_from_data_directory(data_path)
 
     # Pega os comprimentos de excitação e as concentrações e organiza elas de forma crescente
@@ -122,7 +132,7 @@ def build_concentration_exc_matrices(data_path: Path):
                 Trunca as arrays para que todas fiquem do mesmo tamanho, só assim o método PCA pode ser realizado.
                 Neste caso, limita que o índice máximo seja lastreado no comprimento máximo de onda de emissão de 680 nm
                 """
-                list_new_length = len(data.content.x[data.content.x <= 680]) 
+                list_new_length = len(data.content.x[data.content.x <= X_END_BOUND]) 
                 trucated_intensity_list = data.content.y[:list_new_length]
                 concentration_spectrum = trucated_intensity_list.astype(float).tolist()
 
@@ -136,51 +146,89 @@ def build_concentration_exc_matrices(data_path: Path):
         # print(f"Matrix shape: {X.shape}")
         matrices.append(X)
 
-    return excitations, matrices
+    return excitations, concentrations, matrices
 
 
-def smoothing_process(old_data: Data):
-        old_data_content = old_data.content
+def print_pca_info(data_path: Path, target_excitation: float):
+    excitations, concentrations, exc_matrices = build_concentration_exc_matrices(data_path)
+    concentration_percentages = [float(concentration.name[6:][:-1]) for concentration in concentrations]
 
-        # Linearização
-        convolution_width = 15 # Tamanho da janela de análise (o tanto de pontos considerado ao redor de um outro pontos) de suavização/derivada
-        polyorder = 3 # Grau do polinômio que vai ser utilizado para aproximar e depois derivar
-        deriv = 0 # Ordem da derivada
-        delta=0.5 # Espaçamento entre medidas
+    for index in range(0, len(excitations)):
+        excitation = excitations[index]
+        if excitation != target_excitation:
+            continue
 
-        y_smooth = sp.signal.savgol_filter(
-            old_data_content.y, 
-            window_length=convolution_width, 
-            polyorder=polyorder, 
-            deriv = deriv, # Quando a derivada é zero, ele vai só suavizar
-            delta=delta
-        )
+        excitation_matrix = exc_matrices[index]
+        
+        pca = PCA()
+        """
+        Retorna uma matriz de forma (n_amostras x n_componentes).
 
-        return Data(old_data.name, old_data.parent, DataContent(old_data_content.x, y_smooth))
+        Nessa matriz cada linha é uma concentração e cada coluna é a coordenada daquela
+        concentração naquela componente.
 
-def second_derivative_process(old_data: Data):
-        old_data_content = old_data.content
+        scores = escores
+        """
+        scores = pca.fit_transform(excitation_matrix)
 
-        # Linearizaração
-        convolution_width = 15 # Tamanho da janela de análise (o tanto de pontos considerado ao redor de um outro pontos) de suavização/derivada
-        polyorder = 3 # Grau do polinômio que vai ser utilizado para aproximar e depois derivar
-        deriv = 2 # Ordem da derivada
-        delta=0.5 # Espaçamento entre medidas
+        """
+        Retorna uma matriz de forma (n_componentes x n_comprimentos de onda).
 
-        y_smooth = sp.signal.savgol_filter(
-            old_data_content.y, 
-            window_length=convolution_width, 
-            polyorder=polyorder, 
-            deriv = deriv,
-            delta=delta
-        )
+        Cada linha é uma componente principal; cada coluna é o peso daquele comprimento de onda de 
+        emissão naquela componente. Ou seja, a matriz diz quanto cada comprimento de onda contribui 
+        para formar cada componente."
 
-        return Data(old_data.name, old_data.parent, DataContent(old_data_content.x, y_smooth))
+        loadings = pesos
+        """
+        loadings = pca.components_
+        # print(f"Loadings shape: {loadings.shape}")
+
+        """
+        Retorna uma lista com o valor, em porcentagem normalizada, de quanto cada comportante 
+        é responsável por provocar a mudança nos valores analizados.
+        """
+        explained_percentage = pca.explained_variance_ratio_ * 100 # Convertendo para escala percentual
+        # print(f"Excitation: {excitation}")
+
+        # Um step é adicionado no limite final do arranjo para que o valor final seja incluido
+        wavelengths = np.arange(excitation + X_START_OFFSET, X_END_BOUND + X_STEP, X_STEP)
+        # print(f"Wavelengths shape: {wavelengths.shape}")
+
+        excitation_figure, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+        # Gráfico de Peso vs Comprimento de onda
+        scr_vs_wavelength_axis = axes[0]
+
+        # Gráfico de Escore vs Concentração
+        scr_vs_concentration_axis = axes[1]
+
+        for pc_index, pci_loading in enumerate(loadings):
+            pc_label = f"PC{pc_index + 1} - {explained_percentage[pc_index]:.2f}%"
+            scr_vs_wavelength_axis.plot(wavelengths, pci_loading, label=pc_label, alpha = 1 / (pc_index +  1))
+
+        scr_vs_wavelength_axis.set_title(f"Peso vs Comprimento de onda de emissão")
+        scr_vs_wavelength_axis.set_ylabel("Peso")
+        scr_vs_wavelength_axis.set_xlabel(f"Comprimento de onda de emissão em {int(excitation)} nm")
+        scr_vs_wavelength_axis.legend(loc="upper right")
+
+        # Aqui tem que iterar por coluna, já que os valores da componente estão lá
+        for pc_index in range(scores.shape[1]):
+            scr_vs_concentration_axis.scatter(concentration_percentages, scores[:, pc_index], label=f"PC{pc_index + 1}")
+            scr_vs_concentration_axis.plot(concentration_percentages, scores[:, pc_index], alpha=0.4)  # linha mais fraca
+
+        scr_vs_concentration_axis.set_title(f"Escore vs Concentração")
+        scr_vs_concentration_axis.set_ylabel("Escore")
+        scr_vs_concentration_axis.set_xlabel("Concentração (%)")
+        scr_vs_concentration_axis.legend(loc="upper right")
+
+        plt.tight_layout()
+        plt.ioff()
+        plt.show()
 
 
-def print_pca_info(data_path: Path):
-    excitations, exc_matrices = build_concentration_exc_matrices(data_path)
-    
+def print_tabulated_pca_info(data_path: Path):
+    excitations, _, exc_matrices = build_concentration_exc_matrices(data_path)
+
     pca_results = []
 
     for index, _ in enumerate(excitations):
@@ -221,6 +269,44 @@ def print_pca_info(data_path: Path):
         )
     )
 
+def smoothing_process(old_data: Data):
+        old_data_content = old_data.content
+
+        # Linearização
+        convolution_width = 15 # Tamanho da janela de análise (o tanto de pontos considerado ao redor de um outro pontos) de suavização/derivada
+        polyorder = 3 # Grau do polinômio que vai ser utilizado para aproximar e depois derivar
+        deriv = 0 # Ordem da derivada
+        delta=0.5 # Espaçamento entre medidas
+
+        y_smooth = sp.signal.savgol_filter(
+            old_data_content.y, 
+            window_length=convolution_width, 
+            polyorder=polyorder, 
+            deriv = deriv, # Quando a derivada é zero, ele vai só suavizar
+            delta=delta
+        )
+
+        return Data(old_data.name, old_data.parent, DataContent(old_data_content.x, y_smooth))
+
+def second_derivative_process(old_data: Data):
+        old_data_content = old_data.content
+
+        # Linearizaração
+        convolution_width = 15 # Tamanho da janela de análise (o tanto de pontos considerado ao redor de um outro pontos) de suavização/derivada
+        polyorder = 3 # Grau do polinômio que vai ser utilizado para aproximar e depois derivar
+        deriv = 2 # Ordem da derivada
+        delta=0.5 # Espaçamento entre medidas
+
+        y_smooth = sp.signal.savgol_filter(
+            old_data_content.y, 
+            window_length=convolution_width, 
+            polyorder=polyorder, 
+            deriv = deriv,
+            delta=delta
+        )
+
+        return Data(old_data.name, old_data.parent, DataContent(old_data_content.x, y_smooth))
+
 app = typer.Typer()
 
 @app.command()
@@ -240,10 +326,16 @@ def main(data_path: Annotated[
     smoothed_data_path = get_data_process_and_save(data_path, "suavizado", smoothing_process)
     second_derivative_data_path = get_data_process_and_save(data_path, "segunda_derivada", second_derivative_process)
 
-    for path in [data_path, smoothed_data_path, second_derivative_data_path]:
-        print(f"PCAs em \"{path.name.removesuffix(path.suffix)}\"")
-        print_pca_info(path)
-        print()
+    print_pca_info(data_path, 380)
+    print_pca_info(smoothed_data_path, 380)
+    
+    print_pca_info(data_path, 400)
+    
+    print_pca_info(second_derivative_data_path, 440)
+    print_pca_info(second_derivative_data_path, 350)
+
+
+
    
 if __name__ == "__main__":
     app()
