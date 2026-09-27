@@ -150,6 +150,7 @@ colunas se referem aos valores de absorbância.
 Essa lógica se aplica para todas as linhas, até na primeira, onde tem os nomes de
 cada iteração de medição.
 """
+DEFAULT_CSV_FORMAT_KEYS = ["Title", "Comment", "Date", "Operator", "System Name", "Wavelength (nm)"]
 class CSV_DataExtractor(DataExtractor):
     def __init__(self):
         super().__init__("CSV", "csv")
@@ -161,13 +162,21 @@ class CSV_DataExtractor(DataExtractor):
             raise DataParsingError(f"O caminho para a extração de dados em {self.name} deve ser de um arquivo .{self.file_extension}.")
 
         try:
-            data_frame = pandas.read_csv(data_path, delimiter=";", decimal=",", float_precision="round_trip")
+            # Lê só os headers para ter certeza que o arquivo está no formato suportado
+            crude_data_frame = pandas.read_csv(data_path, delimiter=";", nrows = 6, usecols=[0, 1], header=None, names=["Key", "Value"])
+            if crude_data_frame["Key"].to_list() != DEFAULT_CSV_FORMAT_KEYS:
+                raise DataParsingError(f"Não há um formato suportado no arquivo: {data_path.absolute()}")
+            
+            # Pula os headers, depois da confirmação, e já começa a leitura somente dos dados
+            data_frame = pandas.read_csv(data_path, delimiter=";", skiprows=5, decimal=",", float_precision="round_trip")
         except pandas.errors.EmptyDataError:
             raise DataParsingError(f"Não há dados no arquivo: {data_path.absolute()}")
         except pandas.errors.ParserError:
             raise DataParsingError(f"Não foi ler os dados do arquivo: {data_path.absolute()}")
         except pandas.errors.DtypeWarning:
             raise DataParsingError(f"Os dados não estão formatados de maneira padronizada no arquivo: {data_path.absolute()}")
+        except UnicodeDecodeError:
+            raise DataParsingError(f"O arquivo não está codificado em utf-8: {data_path.absolute()}")
 
         rows, columns = data_frame.shape
 
